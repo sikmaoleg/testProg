@@ -1,0 +1,22 @@
+*{
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+.form{
+    margin: 100px auto;
+    width: 600px;
+}
+
+.form h1{
+    margin-bottom: 40px;
+}
+
+.form label, .form input[type="submit"]{
+    font-size: 20px;
+}
+
+input:invalid {
+    background-color: lightpink;
+}
