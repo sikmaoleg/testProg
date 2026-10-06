@@ -1,0 +1,16 @@
+# Служба systemd для бота. Ставится скриптом deploy/install.sh — он подставляет путь вместо @BOT_DIR@.
+[Unit]
+Description=Telegram bot «Нет тепла? Сообщите!»
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=heatbot
+WorkingDirectory=@BOT_DIR@
+ExecStart=@BOT_DIR@/venv/bin/python bot.py
+Restart=always
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

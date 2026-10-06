@@ -37,8 +37,28 @@
    ```
 4. Чтобы заявки приходили в общую группу — добавьте бота в группу и укажите её ID в `ADMIN_CHAT_ID`.
 
-Заявки хранятся в SQLite-файле `reports.db`. Для круглосуточной работы запустите бота
-на сервере (например, через systemd или `screen`).
+Заявки хранятся в SQLite-файле `reports.db`.
+
+## Запуск на сервере (постоянно)
+Подойдёт самый дешёвый VPS с Ubuntu 22.04 или 24.04. Подключитесь к нему по SSH под root
+и выполните, подставив свои значения в `.env`:
+```bash
+apt update && apt install -y git
+git clone -b claude/quirky-brown-oqk90v https://github.com/sikmaoleg/testProg.git /opt/testProg
+cat > /opt/testProg/heat_bot/.env <<'EOF'
+BOT_TOKEN=123456789:AAAA-your-token
+ADMIN_IDS=111111111
+GOOGLE_SCRIPT_URL=
+EOF
+bash /opt/testProg/heat_bot/deploy/install.sh
+```
+Скрипт `deploy/install.sh` ставит зависимости и регистрирует бота службой systemd `heat-bot`:
+она запускается при включении сервера и перезапускает бота после сбоя.
+- Состояние: `systemctl status heat-bot`, журнал: `journalctl -u heat-bot -f`.
+- Обновить бота: `cd /opt/testProg && git pull && bash heat_bot/deploy/install.sh`.
+- С одним токеном может работать только одна копия бота — другие остановите.
+- Номера заявок ведёт база `reports.db`. Если база начата заново (например, на новом сервере),
+  удалите из Google Таблицы старые строки — иначе новые заявки с теми же номерами туда не попадут.
 
 ## Google Таблица (по желанию)
 Бот может дописывать каждую заявку строкой в Google Таблицу.
