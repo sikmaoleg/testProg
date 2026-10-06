@@ -24,6 +24,7 @@ from telegram.ext import (
 )
 
 logging.basicConfig(format="%(asctime)s %(levelname)s %(name)s: %(message)s", level=logging.INFO)
+logging.getLogger("httpx").setLevel(logging.WARNING)  # не логировать каждый запрос: в URL есть токен
 log = logging.getLogger("heat_bot")
 
 
@@ -47,16 +48,18 @@ ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID", "").strip()
 DB_PATH = os.environ.get("DB_PATH", "reports.db")
 
 CITY = "Черноголовка"
+CITY_GEN = "Черноголовки"  # «жителей Черноголовки»
+CITY_PREP = "Черноголовке"  # «в Черноголовке»
 SLOGAN = "🔥 Нет тепла? Сообщите!"
 
 # Профиль бота: текст на пустом экране чата, краткое описание и меню команд
 DESCRIPTION = (
     f"{SLOGAN}\n\n"
-    f"Бот для жителей г. {CITY}. Если дома холодно, не работает отопление "
+    f"Бот для жителей {CITY_GEN}. Если дома холодно, не работает отопление "
     "или нет горячей воды — оставьте заявку. Мы соберём обращения и передадим их "
     "в управляющую компанию и администрацию."
 )
-SHORT_DESCRIPTION = f"{SLOGAN} Сбор обращений жителей г. {CITY} об отоплении и горячей воде."
+SHORT_DESCRIPTION = f"{SLOGAN} Сбор обращений жителей {CITY_GEN} об отоплении и горячей воде."
 COMMANDS = [
     ("report", "Сообщить о проблеме"),
     ("help", "Помощь"),
@@ -150,7 +153,7 @@ def summary(d: dict) -> str:
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text(
         f"{SLOGAN}\n\n"
-        f"Это бот для жителей г. {CITY}. Если у вас дома холодно, нет отопления "
+        f"Это бот для жителей {CITY_GEN}. Если у вас дома холодно, нет отопления "
         "или горячей воды — оставьте заявку. Мы соберём обращения и передадим их "
         "в управляющую компанию и администрацию.\n\n"
         f"Нажмите «{BTN_REPORT}», чтобы начать.",
@@ -179,7 +182,7 @@ async def report_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 async def got_problem(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data["problem"] = update.message.text.strip()
     await update.message.reply_text(
-        f"Укажите адрес в г. {CITY}: улицу и номер дома.\n"
+        f"Укажите адрес в {CITY_PREP}: улицу и номер дома.\n"
         "Например: <i>Школьный бульвар, 10</i>",
         parse_mode="HTML",
         reply_markup=CANCEL_KB,
