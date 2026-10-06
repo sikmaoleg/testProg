@@ -8,7 +8,12 @@ cd "$(dirname "$0")/.."
 BOT_DIR="$(pwd)"
 
 apt-get update -qq
-apt-get install -y -qq python3-venv >/dev/null
+apt-get install -y -qq python3-venv curl >/dev/null
+
+if ! curl -s -m 15 -o /dev/null https://api.telegram.org; then
+    echo "⚠️  С этого сервера нет связи с api.telegram.org — бот здесь работать не сможет."
+    echo "    Скорее всего, доступ к Telegram заблокирован: нужен сервер за пределами России."
+fi
 
 id heatbot >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin heatbot
 python3 -m venv venv

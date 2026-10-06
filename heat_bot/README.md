@@ -40,8 +40,9 @@
 Заявки хранятся в SQLite-файле `reports.db`.
 
 ## Запуск на сервере (постоянно)
-Подойдёт самый дешёвый VPS с Ubuntu 22.04 или 24.04. Подключитесь к нему по SSH под root
-и выполните, подставив свои значения в `.env`:
+Подойдёт самый дешёвый VPS с Ubuntu 22.04 или 24.04, но **за пределами России** (Нидерланды,
+Германия, Финляндия): с российских серверов доступ к Telegram API с 2026 года блокируется.
+Подключитесь к нему по SSH под root и выполните, подставив свои значения в `.env`:
 ```bash
 apt update && apt install -y git
 git clone -b claude/quirky-brown-oqk90v https://github.com/sikmaoleg/testProg.git /opt/testProg
