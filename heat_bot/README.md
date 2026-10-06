@@ -25,6 +25,7 @@
 1. Создайте бота у [@BotFather](https://t.me/BotFather) (`/newbot`), получите токен.
    Описание со слоганом и меню команд бот заполнит сам при первом запуске
    (если они уже заданы в @BotFather — не тронет).
+   Аватарка — файл `avatar.jpg` (в @BotFather: `/setuserpic`).
 2. Узнайте свой Telegram ID у [@userinfobot](https://t.me/userinfobot).
 3. Установите и запустите:
    ```bash
