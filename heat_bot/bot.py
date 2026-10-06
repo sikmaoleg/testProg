@@ -49,6 +49,20 @@ DB_PATH = os.environ.get("DB_PATH", "reports.db")
 CITY = "Черноголовка"
 SLOGAN = "🔥 Нет тепла? Сообщите!"
 
+# Профиль бота: текст на пустом экране чата, краткое описание и меню команд
+DESCRIPTION = (
+    f"{SLOGAN}\n\n"
+    f"Бот для жителей г. {CITY}. Если дома холодно, не работает отопление "
+    "или нет горячей воды — оставьте заявку. Мы соберём обращения и передадим их "
+    "в управляющую компанию и администрацию."
+)
+SHORT_DESCRIPTION = f"{SLOGAN} Сбор обращений жителей г. {CITY} об отоплении и горячей воде."
+COMMANDS = [
+    ("report", "Сообщить о проблеме"),
+    ("help", "Помощь"),
+    ("cancel", "Отменить заявку"),
+]
+
 # Тексты кнопок
 BTN_REPORT = "📝 Сообщить о проблеме"
 BTN_SKIP = "⏭ Пропустить"
@@ -316,12 +330,26 @@ async def export(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 # ---------------------------------------------------------------- запуск
 
+async def post_init(app: Application) -> None:
+    """Заполняет профиль бота, если он ещё пустой.
+    Изменения, сделанные вручную в @BotFather, не перезаписываются."""
+    try:
+        if not (await app.bot.get_my_description()).description:
+            await app.bot.set_my_description(DESCRIPTION)
+        if not (await app.bot.get_my_short_description()).short_description:
+            await app.bot.set_my_short_description(SHORT_DESCRIPTION)
+        if not await app.bot.get_my_commands():
+            await app.bot.set_my_commands(COMMANDS)
+    except Exception as e:  # noqa: BLE001 — профиль не критичен для работы
+        log.warning("Не удалось настроить профиль бота: %s", e)
+
+
 def main() -> None:
     if not BOT_TOKEN:
         raise SystemExit("Не задан BOT_TOKEN (см. .env.example)")
     init_db()
 
-    app = Application.builder().token(BOT_TOKEN).build()
+    app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
 
     cancel_filter = filters.Regex(f"^{BTN_CANCEL}$")
     text = filters.TEXT & ~filters.COMMAND & ~cancel_filter
