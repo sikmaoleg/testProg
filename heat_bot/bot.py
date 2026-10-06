@@ -63,7 +63,7 @@ PROBLEMS = [
 ]
 DURATIONS = ["Сегодня", "1–2 дня", "3–7 дней", "Больше недели"]
 
-PROBLEM, ADDRESS, APARTMENT, DURATION, PHONE, PHOTO, COMMENT, CONFIRM = range(8)
+PROBLEM, ADDRESS, APARTMENT, DURATION, PHONE, COMMENT, CONFIRM = range(7)
 
 
 # ---------------------------------------------------------------- база данных
@@ -88,7 +88,6 @@ def init_db() -> None:
                 apartment TEXT,
                 duration TEXT,
                 phone TEXT,
-                photo_file_id TEXT,
                 comment TEXT
             )"""
         )
@@ -98,9 +97,9 @@ def save_report(data: dict) -> int:
     with db() as conn:
         cur = conn.execute(
             """INSERT INTO reports (created_at, user_id, username, full_name, problem, address,
-                                    apartment, duration, phone, photo_file_id, comment)
+                                    apartment, duration, phone, comment)
                VALUES (:created_at, :user_id, :username, :full_name, :problem, :address,
-                       :apartment, :duration, :phone, :photo_file_id, :comment)""",
+                       :apartment, :duration, :phone, :comment)""",
             data,
         )
         return cur.lastrowid
@@ -128,7 +127,6 @@ def summary(d: dict) -> str:
         + (f", кв. {d['apartment']}" if d.get("apartment") else "")
         + f"\nКак давно: {d.get('duration')}\n"
         f"Телефон: {d.get('phone') or '—'}\n"
-        f"Фото: {'есть' if d.get('photo_file_id') else 'нет'}\n"
         f"Комментарий: {d.get('comment') or '—'}"
     )
 
@@ -205,15 +203,6 @@ async def got_phone(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     else:
         context.user_data["phone"] = ""
     await msg.reply_text(
-        "Пришлите фото (термометр, батарея и т.п.) или пропустите:", reply_markup=SKIP_KB
-    )
-    return PHOTO
-
-
-async def got_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    msg = update.message
-    context.user_data["photo_file_id"] = msg.photo[-1].file_id if msg.photo else ""
-    await msg.reply_text(
         "Комментарий: температура в квартире, подробности (или пропустите):",
         reply_markup=SKIP_KB,
     )
@@ -238,7 +227,7 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         username=user.username or "",
         full_name=user.full_name,
     )
-    for key in ("apartment", "phone", "photo_file_id", "comment"):
+    for key in ("apartment", "phone", "comment"):
         d.setdefault(key, "")
     report_id = save_report(d)
     context.user_data.clear()
@@ -260,8 +249,6 @@ async def notify_admins(context: ContextTypes.DEFAULT_TYPE, report_id: int, d: d
     for chat_id in targets:
         try:
             await context.bot.send_message(chat_id, text)
-            if d.get("photo_file_id"):
-                await context.bot.send_photo(chat_id, d["photo_file_id"], caption=f"Фото к заявке №{report_id}")
         except Exception as e:  # noqa: BLE001 — уведомление не должно ронять диалог
             log.warning("Не удалось уведомить %s: %s", chat_id, e)
 
@@ -316,11 +303,11 @@ async def export(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     buf = io.StringIO()
     writer = csv.writer(buf, delimiter=";")
     writer.writerow(["№", "Дата", "Проблема", "Адрес", "Квартира", "Как давно", "Телефон",
-                     "Комментарий", "Имя", "Username", "User ID", "Фото"])
+                     "Комментарий", "Имя", "Username", "User ID"])
     for r in rows:
         writer.writerow([r["id"], r["created_at"], r["problem"], r["address"], r["apartment"],
                          r["duration"], r["phone"], r["comment"], r["full_name"], r["username"],
-                         r["user_id"], "да" if r["photo_file_id"] else ""])
+                         r["user_id"]])
     data = buf.getvalue().encode("utf-8-sig")  # BOM — чтобы Excel корректно открыл кириллицу
     name = f"zayavki_chernogolovka_{datetime.now():%Y%m%d_%H%M}.csv"
     await update.message.reply_document(io.BytesIO(data), filename=name,
@@ -351,7 +338,6 @@ def main() -> None:
             APARTMENT: [MessageHandler(text, got_apartment)],
             DURATION: [MessageHandler(text, got_duration)],
             PHONE: [MessageHandler(filters.CONTACT | text, got_phone)],
-            PHOTO: [MessageHandler(filters.PHOTO | skip, got_photo)],
             COMMENT: [MessageHandler(text, got_comment)],
             CONFIRM: [MessageHandler(filters.Regex(f"^{BTN_SEND}$"), confirm)],
         },
