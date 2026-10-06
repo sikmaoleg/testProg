@@ -1,6 +1,7 @@
-"""Телеграм-бот «Нет тепла? Сообщите!» — сбор обращений жителей г. Черноголовки
+"""Телеграм-бот «Нет тепла? Сообщите!» — сбор обращений жителей г.о. Черноголовка
 об отсутствии отопления и горячей воды."""
 
+import asyncio
 import csv
 import io
 import logging
@@ -22,6 +23,8 @@ from telegram.ext import (
     MessageHandler,
     filters,
 )
+
+import google_sheet
 
 logging.basicConfig(format="%(asctime)s %(levelname)s %(name)s: %(message)s", level=logging.INFO)
 logging.getLogger("httpx").setLevel(logging.WARNING)  # не логировать каждый запрос: в URL есть токен
@@ -46,10 +49,10 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 ADMIN_IDS = {int(x) for x in os.environ.get("ADMIN_IDS", "").replace(" ", "").split(",") if x}
 ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID", "").strip()
 DB_PATH = os.environ.get("DB_PATH", "reports.db")
+GOOGLE_SCRIPT_URL = os.environ.get("GOOGLE_SCRIPT_URL", "").strip()
 
-CITY = "Черноголовка"
+DISTRICT = "г.о. Черноголовка"
 CITY_GEN = "Черноголовки"  # «жителей Черноголовки»
-CITY_PREP = "Черноголовке"  # «в Черноголовке»
 SLOGAN = "🔥 Нет тепла? Сообщите!"
 
 # Профиль бота: текст на пустом экране чата, краткое описание и меню команд
@@ -108,6 +111,28 @@ def init_db() -> None:
                 comment TEXT
             )"""
         )
+        conn.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
+
+
+def get_meta(key: str, default: str = "") -> str:
+    with db() as conn:
+        row = conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+    return row["value"] if row else default
+
+
+def set_meta(key: str, value: str) -> None:
+    with db() as conn:
+        conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, value))
+
+
+# Столбцы выгрузки — для CSV и Google Таблицы
+COLUMNS = ["№", "Дата", "Проблема", "Адрес", "Квартира", "Как давно", "Телефон",
+           "Комментарий", "Имя", "Username", "User ID"]
+
+
+def report_row(r) -> list:
+    return [r["id"], r["created_at"], r["problem"], r["address"], r["apartment"], r["duration"],
+            r["phone"], r["comment"], r["full_name"], r["username"], r["user_id"]]
 
 
 def save_report(data: dict) -> int:
@@ -140,7 +165,7 @@ CONFIRM_KB = kb([[BTN_SEND], [BTN_CANCEL]])
 def summary(d: dict) -> str:
     return (
         f"Проблема: {d.get('problem')}\n"
-        f"Адрес: г. {CITY}, {d.get('address')}"
+        f"Адрес: {DISTRICT}, {d.get('address')}"
         + (f", кв. {d['apartment']}" if d.get("apartment") else "")
         + f"\nКак давно: {d.get('duration')}\n"
         f"Телефон: {d.get('phone') or '—'}\n"
@@ -182,7 +207,8 @@ async def report_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 async def got_problem(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data["problem"] = update.message.text.strip()
     await update.message.reply_text(
-        f"Укажите адрес в {CITY_PREP}: улицу и номер дома.\n"
+        "Укажите адрес: улицу и номер дома.\n"
+        "Если живёте не в самой Черноголовке — добавьте населённый пункт.\n"
         "Например: <i>Школьный бульвар, 10</i>",
         parse_mode="HTML",
         reply_markup=CANCEL_KB,
@@ -256,18 +282,49 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         reply_markup=MAIN_KB,
     )
     await notify_admins(context, report_id, d)
+    if GOOGLE_SCRIPT_URL:
+        context.application.create_task(sync_sheet(context.bot))
     return ConversationHandler.END
+
+
+async def send_admins(bot, text: str) -> None:
+    for chat_id in [ADMIN_CHAT_ID] if ADMIN_CHAT_ID else list(ADMIN_IDS):
+        try:
+            await bot.send_message(chat_id, text)
+        except Exception as e:  # noqa: BLE001 — уведомление не должно ронять диалог
+            log.warning("Не удалось уведомить %s: %s", chat_id, e)
 
 
 async def notify_admins(context: ContextTypes.DEFAULT_TYPE, report_id: int, d: dict) -> None:
     who = d["full_name"] + (f" (@{d['username']})" if d["username"] else "")
-    text = f"🆕 Заявка №{report_id} от {d['created_at']}\nОт: {who}\n\n{summary(d)}"
-    targets = [ADMIN_CHAT_ID] if ADMIN_CHAT_ID else list(ADMIN_IDS)
-    for chat_id in targets:
+    await send_admins(context.bot, f"🆕 Заявка №{report_id} от {d['created_at']}\nОт: {who}\n\n{summary(d)}")
+
+
+# ---------------------------------------------------------------- Google Таблица
+
+SHEET_LOCK = asyncio.Lock()
+
+
+async def sync_sheet(bot) -> None:
+    """Дописывает в Google Таблицу заявки, которые туда ещё не попали.
+    Если отправка не удалась, они уйдут со следующей заявкой или при перезапуске бота."""
+    key = f"sheet_last_id:{GOOGLE_SCRIPT_URL}"  # новая ссылка — новая таблица, в неё уйдут все заявки
+    async with SHEET_LOCK:
+        with db() as conn:
+            pending = conn.execute(
+                "SELECT * FROM reports WHERE id > ? ORDER BY id", (int(get_meta(key, "0")),)
+            ).fetchall()
+        if not pending:
+            return
         try:
-            await context.bot.send_message(chat_id, text)
-        except Exception as e:  # noqa: BLE001 — уведомление не должно ронять диалог
-            log.warning("Не удалось уведомить %s: %s", chat_id, e)
+            added = await google_sheet.append(GOOGLE_SCRIPT_URL, COLUMNS, [report_row(r) for r in pending])
+        except Exception as e:  # noqa: BLE001 — сбой таблицы не должен мешать приёму заявок
+            log.warning("Google Таблица: %s", e)
+            await send_admins(bot, f"⚠️ Не удалось записать заявки в Google Таблицу: {e}\n"
+                                   "Попробую снова со следующей заявкой.")
+            return
+        set_meta(key, str(pending[-1]["id"]))
+        log.info("Google Таблица: добавлено строк: %s", added)
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -319,12 +376,8 @@ async def export(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         rows = conn.execute("SELECT * FROM reports ORDER BY id").fetchall()
     buf = io.StringIO()
     writer = csv.writer(buf, delimiter=";")
-    writer.writerow(["№", "Дата", "Проблема", "Адрес", "Квартира", "Как давно", "Телефон",
-                     "Комментарий", "Имя", "Username", "User ID"])
-    for r in rows:
-        writer.writerow([r["id"], r["created_at"], r["problem"], r["address"], r["apartment"],
-                         r["duration"], r["phone"], r["comment"], r["full_name"], r["username"],
-                         r["user_id"]])
+    writer.writerow(COLUMNS)
+    writer.writerows(report_row(r) for r in rows)
     data = buf.getvalue().encode("utf-8-sig")  # BOM — чтобы Excel корректно открыл кириллицу
     name = f"zayavki_chernogolovka_{datetime.now():%Y%m%d_%H%M}.csv"
     await update.message.reply_document(io.BytesIO(data), filename=name,
@@ -334,8 +387,8 @@ async def export(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 # ---------------------------------------------------------------- запуск
 
 async def post_init(app: Application) -> None:
-    """Заполняет профиль бота, если он ещё пустой.
-    Изменения, сделанные вручную в @BotFather, не перезаписываются."""
+    """Заполняет профиль бота, если он ещё пустой (правки из @BotFather не перезаписываются),
+    и досылает в Google Таблицу заявки, которые туда ещё не попали."""
     try:
         if not (await app.bot.get_my_description()).description:
             await app.bot.set_my_description(DESCRIPTION)
@@ -345,6 +398,8 @@ async def post_init(app: Application) -> None:
             await app.bot.set_my_commands(COMMANDS)
     except Exception as e:  # noqa: BLE001 — профиль не критичен для работы
         log.warning("Не удалось настроить профиль бота: %s", e)
+    if GOOGLE_SCRIPT_URL:
+        await sync_sheet(app.bot)
 
 
 def main() -> None:
