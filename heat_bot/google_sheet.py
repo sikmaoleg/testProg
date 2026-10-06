@@ -1,5 +1,8 @@
 """Запись заявок в Google Таблицу через веб-приложение Apps Script (код — google_script.gs)."""
 
+import html
+import re
+
 import httpx
 
 
@@ -26,10 +29,19 @@ async def append(url: str, header: list, rows: list) -> int:
     try:
         data = resp.json()
     except ValueError:
-        raise SheetError(
-            f"неожиданный ответ скрипта (HTTP {resp.status_code}) — проверьте ссылку "
-            "и что веб-приложение развёрнуто с доступом «Все»"
-        ) from None
+        raise SheetError(_explain(resp)) from None
     if not data.get("ok"):
         raise SheetError(f"ошибка скрипта: {data.get('error')}")
     return int(data.get("added", 0))
+
+
+def _explain(resp: httpx.Response) -> str:
+    """Понятная причина, когда вместо ответа скрипта пришла HTML-страница Google."""
+    if resp.url.host == "accounts.google.com":
+        return "Google просит войти в аккаунт — разверните веб-приложение с доступом «Все»"
+    page = re.sub(r"<script.*?</script>|<style.*?</style>|<[^>]+>", " ", resp.text, flags=re.S)
+    page = re.sub(r"\s+", " ", html.unescape(page)).strip()
+    if "Script function not found" in page:
+        return ("в развёрнутой версии скрипта нет кода — сохраните код в Apps Script и разверните "
+                "новую версию (Управление развертываниями → ✏️ → Новая версия)")
+    return f"неожиданный ответ скрипта (HTTP {resp.status_code}): {page[:150]}"
