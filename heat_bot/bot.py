@@ -6,8 +6,9 @@ import csv
 import io
 import logging
 import os
+import re
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from telegram import (
@@ -26,6 +27,7 @@ from telegram.ext import (
 )
 
 import google_sheet
+import legal
 
 logging.basicConfig(format="%(asctime)s %(levelname)s %(name)s: %(message)s", level=logging.INFO)
 logging.getLogger("httpx").setLevel(logging.WARNING)  # не логировать каждый запрос: в URL есть токен
@@ -54,6 +56,10 @@ DB_PATH = os.environ.get("DB_PATH", "reports.db")
 TIMEZONE = ZoneInfo(os.environ.get("TIMEZONE") or "Europe/Moscow")
 REPORT_START = int(os.environ.get("REPORT_START") or 1)  # с какого номера начать нумерацию в новой базе
 GOOGLE_SCRIPT_URL = os.environ.get("GOOGLE_SCRIPT_URL", "").strip()
+# Оператор персональных данных (152-ФЗ): кто собирает данные и как с ним связаться
+OPERATOR_NAME = os.environ.get("OPERATOR_NAME", "").strip()
+OPERATOR_CONTACT = os.environ.get("OPERATOR_CONTACT", "").strip()
+RETENTION_DAYS = int(os.environ.get("RETENTION_DAYS") or 365)  # срок хранения заявок
 
 DISTRICT = "г.о. Черноголовка"
 CITY_GEN = "Черноголовки"  # «жителей Черноголовки»
@@ -69,14 +75,27 @@ SHORT_DESCRIPTION = f"{SLOGAN} Сбор обращений жителей {CITY_
 COMMANDS = [
     ("report", "Сообщить о проблеме"),
     ("help", "Помощь"),
+    ("privacy", "Политика обработки персональных данных"),
+    ("mydata", "Мои данные"),
+    ("revoke", "Отозвать согласие и удалить мои данные"),
     ("cancel", "Отменить заявку"),
 ]
+
+# 152-ФЗ: согласие — отдельным документом, политика — там же, где собираются данные
+_operator = OPERATOR_NAME or "[не указан — заполните OPERATOR_NAME в .env]"
+_contact = OPERATOR_CONTACT or "[не указаны — заполните OPERATOR_CONTACT в .env]"
+CONSENT_TEXT = legal.consent_text(_operator, _contact, RETENTION_DAYS)
+CONSENT_VERSION = legal.consent_version(CONSENT_TEXT)
+POLICY_TEXT = legal.policy_text(_operator, _contact, RETENTION_DAYS, "«Нет тепла? Сообщите!»")
 
 # Тексты кнопок
 BTN_REPORT = "📝 Сообщить о проблеме"
 BTN_SKIP = "⏭ Пропустить"
 BTN_CANCEL = "❌ Отмена"
 BTN_SEND = "✅ Отправить"
+BTN_AGREE = "✅ Даю согласие"
+BTN_DISAGREE = "❌ Не согласен"
+BTN_REVOKE = "🗑 Отозвать согласие и удалить мои данные"
 PROBLEMS = [
     "❄️ Нет отопления",
     "🌡 Батареи еле тёплые",
@@ -86,7 +105,7 @@ PROBLEMS = [
 ]
 DURATIONS = ["Сегодня", "1–2 дня", "3–7 дней", "Больше недели"]
 
-PROBLEM, ADDRESS, APARTMENT, DURATION, PHONE, COMMENT, CONFIRM = range(7)
+PROBLEM, ADDRESS, APARTMENT, DURATION, PHONE, COMMENT, CONFIRM, CONSENT = range(8)
 
 
 # ---------------------------------------------------------------- база данных
@@ -115,6 +134,14 @@ def init_db() -> None:
             )"""
         )
         conn.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS consents (
+                user_id INTEGER NOT NULL,
+                version TEXT NOT NULL,
+                given_at TEXT NOT NULL,
+                revoked_at TEXT
+            )"""
+        )
         # При переезде на новый сервер номера продолжаются, а не совпадают со строками в таблице
         row = conn.execute("SELECT seq FROM sqlite_sequence WHERE name = 'reports'").fetchone()
         if REPORT_START - 1 > (row["seq"] if row else 0):
@@ -133,7 +160,44 @@ def set_meta(key: str, value: str) -> None:
         conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, value))
 
 
-# Столбцы выгрузки — для CSV и Google Таблицы
+def now() -> str:
+    return datetime.now(TIMEZONE).strftime("%Y-%m-%d %H:%M")
+
+
+def has_consent(user_id: int) -> bool:
+    with db() as conn:
+        return conn.execute(
+            "SELECT 1 FROM consents WHERE user_id = ? AND version = ? AND revoked_at IS NULL",
+            (user_id, CONSENT_VERSION),
+        ).fetchone() is not None
+
+
+def save_consent(user_id: int) -> None:
+    with db() as conn:
+        conn.execute("INSERT INTO consents (user_id, version, given_at) VALUES (?, ?, ?)",
+                     (user_id, CONSENT_VERSION, now()))
+
+
+def revoke_consent(user_id: int) -> list:
+    """Отзыв согласия: отмечает его и удаляет заявки пользователя. Возвращает номера удалённых заявок."""
+    with db() as conn:
+        ids = [r["id"] for r in conn.execute("SELECT id FROM reports WHERE user_id = ?", (user_id,))]
+        conn.execute("DELETE FROM reports WHERE user_id = ?", (user_id,))
+        conn.execute("UPDATE consents SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL",
+                     (now(), user_id))
+    return ids
+
+
+def purge_expired() -> int:
+    """Удаляет заявки и отозванные согласия старше срока хранения."""
+    cutoff = (datetime.now(TIMEZONE) - timedelta(days=RETENTION_DAYS)).strftime("%Y-%m-%d %H:%M")
+    with db() as conn:
+        n = conn.execute("DELETE FROM reports WHERE created_at < ?", (cutoff,)).rowcount
+        conn.execute("DELETE FROM consents WHERE revoked_at < ?", (cutoff,))
+    return n
+
+
+# Столбцы выгрузки администраторам (CSV)
 COLUMNS = ["№", "Дата", "Проблема", "Адрес", "Квартира", "Как давно", "Телефон",
            "Комментарий", "Имя", "Username", "User ID"]
 
@@ -141,6 +205,15 @@ COLUMNS = ["№", "Дата", "Проблема", "Адрес", "Квартир�
 def report_row(r) -> list:
     return [r["id"], r["created_at"], r["problem"], r["address"], r["apartment"], r["duration"],
             r["phone"], r["comment"], r["full_name"], r["username"], r["user_id"]]
+
+
+# В Google Таблицу (серверы за рубежом) уходят только обезличенные сведения: без квартиры,
+# имени, телефона, Telegram и комментария, где могут быть персональные данные
+SHEET_COLUMNS = ["№", "Дата", "Проблема", "Адрес (улица, дом)", "Как давно"]
+
+
+def sheet_row(r) -> list:
+    return [r["id"], r["created_at"], r["problem"], r["address"], r["duration"]]
 
 
 def save_report(data: dict) -> int:
@@ -168,6 +241,8 @@ SKIP_KB = kb([[BTN_SKIP], [BTN_CANCEL]])
 CANCEL_KB = kb([[BTN_CANCEL]])
 PHONE_KB = kb([[KeyboardButton("📱 Отправить мой номер", request_contact=True)], [BTN_SKIP], [BTN_CANCEL]])
 CONFIRM_KB = kb([[BTN_SEND], [BTN_CANCEL]])
+CONSENT_KB = kb([[BTN_AGREE], [BTN_DISAGREE]])
+REVOKE_KB = kb([[BTN_REVOKE], [BTN_CANCEL]])
 
 
 def summary(d: dict) -> str:
@@ -188,7 +263,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         f"{SLOGAN}\n\n"
         f"Это бот для жителей {CITY_GEN}. Если у вас дома холодно, нет отопления "
         "или горячей воды — оставьте заявку, и с вами свяжутся.\n\n"
-        f"Нажмите «{BTN_REPORT}», чтобы начать.",
+        f"Нажмите «{BTN_REPORT}», чтобы начать.\n\n"
+        "Политика обработки персональных данных: /privacy",
         reply_markup=MAIN_KB,
     )
     return ConversationHandler.END
@@ -199,6 +275,10 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"{SLOGAN}\n\n"
         "/report — оставить заявку\n"
         "/cancel — отменить заполнение\n"
+        "/privacy — политика обработки персональных данных\n"
+        "/consent — текст согласия на обработку данных\n"
+        "/mydata — какие ваши данные хранятся\n"
+        "/revoke — отозвать согласие и удалить ваши данные\n"
     )
     if update.effective_user.id in ADMIN_IDS:
         text += "\nДля администраторов:\n/stats — сводка по адресам\n/export — выгрузка заявок в CSV\n"
@@ -207,8 +287,27 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def report_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.clear()
+    if not has_consent(update.effective_user.id):
+        # Согласие — отдельным сообщением, до того как бот спросит какие-либо данные
+        await update.message.reply_text(CONSENT_TEXT, reply_markup=CONSENT_KB)
+        return CONSENT
     await update.message.reply_text("Что случилось?", reply_markup=PROBLEM_KB)
     return PROBLEM
+
+
+async def consent_given(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    save_consent(update.effective_user.id)
+    await update.message.reply_text("Спасибо! Что случилось?", reply_markup=PROBLEM_KB)
+    return PROBLEM
+
+
+async def consent_declined(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    await update.message.reply_text(
+        "Без согласия на обработку персональных данных мы не можем принять заявку. "
+        "Если передумаете — нажмите «Сообщить о проблеме».",
+        reply_markup=MAIN_KB,
+    )
+    return ConversationHandler.END
 
 
 async def got_problem(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -294,6 +393,77 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return ConversationHandler.END
 
 
+# ---------------------------------------------------------------- персональные данные
+
+async def send_long(message, text: str, **kwargs) -> None:
+    chunks = []
+    while text:
+        cut = len(text) if len(text) <= 4000 else text.rfind("\n\n", 0, 4000)
+        chunks.append(text[:cut])
+        text = text[cut:].lstrip("\n")
+    for i, chunk in enumerate(chunks):
+        await message.reply_text(chunk, **(kwargs if i == len(chunks) - 1 else {}))
+
+
+async def privacy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await send_long(update.message, POLICY_TEXT)
+
+
+async def consent_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await send_long(update.message, CONSENT_TEXT)
+
+
+async def mydata(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    with db() as conn:
+        reports = conn.execute("SELECT * FROM reports WHERE user_id = ? ORDER BY id", (user.id,)).fetchall()
+    lines = [f"Согласие на обработку данных: {'дано' if has_consent(user.id) else 'не дано'}."]
+    if reports:
+        lines.append(f"Ваши заявки ({len(reports)}), хранятся не более {legal.days(RETENTION_DAYS)}:")
+        for r in reports:
+            lines += ["", f"Заявка №{r['id']} от {r['created_at']}", summary(dict(r))]
+        lines += ["", "Также хранится ваше имя и username в Telegram, указанные при подаче заявок."]
+    else:
+        lines.append("Заявок с вашими данными нет.")
+    lines += ["", "Удалить данные: /revoke"]
+    await send_long(update.message, "\n".join(lines))
+
+
+async def revoke(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.reply_text(
+        "Если отозвать согласие, все ваши заявки будут удалены из базы бота, "
+        "и мы не сможем с вами связаться по ним. Новую заявку можно будет подать, "
+        "снова дав согласие.",
+        reply_markup=REVOKE_KB,
+    )
+
+
+async def revoke_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    ids = revoke_consent(user.id)
+    await update.message.reply_text(
+        "Согласие отозвано, ваши данные удалены из базы бота." if ids
+        else "Согласие отозвано. Заявок с вашими данными в базе не было.",
+        reply_markup=MAIN_KB,
+    )
+    if ids:
+        nums = ", ".join(f"№{i}" for i in ids)
+        await send_admins(context.bot, f"🗑 Заявитель отозвал согласие на обработку данных. Заявки {nums} "
+                                       "удалены из базы бота. По закону удалите и их копии: сообщения "
+                                       "о них в этом чате и выгрузки, если сохраняли.")
+
+
+async def retention_loop() -> None:
+    while True:
+        try:
+            n = purge_expired()
+            if n:
+                log.info("Удалено заявок старше %s: %s", legal.days(RETENTION_DAYS), n)
+        except Exception as e:  # noqa: BLE001
+            log.warning("Не удалось удалить старые заявки: %s", e)
+        await asyncio.sleep(24 * 3600)
+
+
 async def send_admins(bot, text: str) -> None:
     for chat_id in [ADMIN_CHAT_ID] if ADMIN_CHAT_ID else list(ADMIN_IDS):
         try:
@@ -324,7 +494,7 @@ async def sync_sheet(bot) -> None:
         if not pending:
             return
         try:
-            added = await google_sheet.append(GOOGLE_SCRIPT_URL, COLUMNS, [report_row(r) for r in pending])
+            added = await google_sheet.append(GOOGLE_SCRIPT_URL, SHEET_COLUMNS, [sheet_row(r) for r in pending])
         except Exception as e:  # noqa: BLE001 — сбой таблицы не должен мешать приёму заявок
             log.warning("Google Таблица: %s", e)
             await send_admins(bot, f"⚠️ Не удалось записать заявки в Google Таблицу: {e}\n"
@@ -401,12 +571,21 @@ async def post_init(app: Application) -> None:
             await app.bot.set_my_description(DESCRIPTION)
         if not (await app.bot.get_my_short_description()).short_description:
             await app.bot.set_my_short_description(SHORT_DESCRIPTION)
-        if not await app.bot.get_my_commands():
+        if [(c.command, c.description) for c in await app.bot.get_my_commands()] != COMMANDS:
             await app.bot.set_my_commands(COMMANDS)
     except Exception as e:  # noqa: BLE001 — профиль не критичен для работы
         log.warning("Не удалось настроить профиль бота: %s", e)
+    if not (OPERATOR_NAME and OPERATOR_CONTACT):
+        log.warning("Не заданы OPERATOR_NAME / OPERATOR_CONTACT — в согласии нет данных оператора")
+    app.bot_data["retention"] = asyncio.create_task(retention_loop())
     if GOOGLE_SCRIPT_URL:
         await sync_sheet(app.bot)
+
+
+async def post_shutdown(app: Application) -> None:
+    task = app.bot_data.get("retention")
+    if task:
+        task.cancel()
 
 
 def main() -> None:
@@ -414,7 +593,7 @@ def main() -> None:
         raise SystemExit("Не задан BOT_TOKEN (см. .env.example)")
     init_db()
 
-    app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
+    app = Application.builder().token(BOT_TOKEN).post_init(post_init).post_shutdown(post_shutdown).build()
 
     cancel_filter = filters.Regex(f"^{BTN_CANCEL}$")
     text = filters.TEXT & ~filters.COMMAND & ~cancel_filter
@@ -433,6 +612,10 @@ def main() -> None:
             PHONE: [MessageHandler(filters.CONTACT | text, got_phone)],
             COMMENT: [MessageHandler(text, got_comment)],
             CONFIRM: [MessageHandler(filters.Regex(f"^{BTN_SEND}$"), confirm)],
+            CONSENT: [
+                MessageHandler(filters.Regex(f"^{BTN_AGREE}$"), consent_given),
+                MessageHandler(filters.Regex(f"^{BTN_DISAGREE}$"), consent_declined),
+            ],
         },
         fallbacks=[
             CommandHandler("cancel", cancel),
@@ -447,6 +630,11 @@ def main() -> None:
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("export", export))
+    app.add_handler(CommandHandler("privacy", privacy))
+    app.add_handler(CommandHandler("consent", consent_cmd))
+    app.add_handler(CommandHandler("mydata", mydata))
+    app.add_handler(CommandHandler("revoke", revoke))
+    app.add_handler(MessageHandler(filters.Regex(f"^{re.escape(BTN_REVOKE)}$"), revoke_confirm))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, start))
 
     log.info("Бот запущен: %s", SLOGAN)
