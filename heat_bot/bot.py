@@ -8,6 +8,7 @@ import logging
 import os
 import sqlite3
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from telegram import (
     KeyboardButton,
@@ -49,6 +50,8 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 ADMIN_IDS = {int(x) for x in os.environ.get("ADMIN_IDS", "").replace(" ", "").split(",") if x}
 ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID", "").strip()
 DB_PATH = os.environ.get("DB_PATH", "reports.db")
+# Время заявок — московское, в каком бы часовом поясе ни был сервер
+TIMEZONE = ZoneInfo(os.environ.get("TIMEZONE") or "Europe/Moscow")
 REPORT_START = int(os.environ.get("REPORT_START") or 1)  # с какого номера начать нумерацию в новой базе
 GOOGLE_SCRIPT_URL = os.environ.get("GOOGLE_SCRIPT_URL", "").strip()
 
@@ -269,7 +272,7 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user = update.effective_user
     d = dict(context.user_data)
     d.update(
-        created_at=datetime.now().strftime("%Y-%m-%d %H:%M"),
+        created_at=datetime.now(TIMEZONE).strftime("%Y-%m-%d %H:%M"),
         user_id=user.id,
         username=user.username or "",
         full_name=user.full_name,
@@ -359,7 +362,7 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         total = conn.execute("SELECT COUNT(*) FROM reports").fetchone()[0]
         today = conn.execute(
             "SELECT COUNT(*) FROM reports WHERE created_at LIKE ?",
-            (datetime.now().strftime("%Y-%m-%d") + "%",),
+            (datetime.now(TIMEZONE).strftime("%Y-%m-%d") + "%",),
         ).fetchone()[0]
         by_addr = conn.execute(
             "SELECT address, COUNT(*) AS n FROM reports GROUP BY LOWER(address) ORDER BY n DESC LIMIT 20"
@@ -383,7 +386,7 @@ async def export(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     writer.writerow(COLUMNS)
     writer.writerows(report_row(r) for r in rows)
     data = buf.getvalue().encode("utf-8-sig")  # BOM — чтобы Excel корректно открыл кириллицу
-    name = f"zayavki_chernogolovka_{datetime.now():%Y%m%d_%H%M}.csv"
+    name = f"zayavki_chernogolovka_{datetime.now(TIMEZONE):%Y%m%d_%H%M}.csv"
     await update.message.reply_document(io.BytesIO(data), filename=name,
                                         caption=f"Заявок: {len(rows)}")
 
