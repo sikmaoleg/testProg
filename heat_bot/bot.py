@@ -49,6 +49,7 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 ADMIN_IDS = {int(x) for x in os.environ.get("ADMIN_IDS", "").replace(" ", "").split(",") if x}
 ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID", "").strip()
 DB_PATH = os.environ.get("DB_PATH", "reports.db")
+REPORT_START = int(os.environ.get("REPORT_START") or 1)  # с какого номера начать нумерацию в новой базе
 GOOGLE_SCRIPT_URL = os.environ.get("GOOGLE_SCRIPT_URL", "").strip()
 
 DISTRICT = "г.о. Черноголовка"
@@ -111,6 +112,11 @@ def init_db() -> None:
             )"""
         )
         conn.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
+        # При переезде на новый сервер номера продолжаются, а не совпадают со строками в таблице
+        row = conn.execute("SELECT seq FROM sqlite_sequence WHERE name = 'reports'").fetchone()
+        if REPORT_START - 1 > (row["seq"] if row else 0):
+            conn.execute("DELETE FROM sqlite_sequence WHERE name = 'reports'")
+            conn.execute("INSERT INTO sqlite_sequence (name, seq) VALUES ('reports', ?)", (REPORT_START - 1,))
 
 
 def get_meta(key: str, default: str = "") -> str:

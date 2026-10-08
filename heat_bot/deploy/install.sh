@@ -7,8 +7,9 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 BOT_DIR="$(pwd)"
 
-apt-get update -qq
-apt-get install -y -qq python3-venv curl >/dev/null
+# На только что созданном сервере apt может быть занят системными обновлениями — ждём
+for _ in $(seq 30); do apt-get update -qq && break; sleep 10; done
+apt-get -o DPkg::Lock::Timeout=600 install -y -qq python3-venv curl >/dev/null
 
 if ! curl -s -m 15 -o /dev/null https://api.telegram.org; then
     echo "⚠️  С этого сервера нет связи с api.telegram.org — бот здесь работать не сможет."
