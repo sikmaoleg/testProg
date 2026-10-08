@@ -20,6 +20,16 @@ id heatbot >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbi
 python3 -m venv venv
 venv/bin/pip install -q --upgrade -r requirements.txt
 [ -f .env ] || cp .env.example .env
+
+# Оператор персональных данных (152-ФЗ) — для текста согласия и политики; спрашиваем один раз
+if ! grep -q "^OPERATOR_NAME=." .env && [ -t 0 ]; then
+    echo
+    echo "Бот показывает жителям согласие на обработку персональных данных — укажите оператора данных."
+    read -rp "ФИО или название организации: " name
+    read -rp "Контакт для обращений (email или телефон): " contact
+    sed -i '/^OPERATOR_NAME=/d; /^OPERATOR_CONTACT=/d' .env
+    printf 'OPERATOR_NAME=%s\nOPERATOR_CONTACT=%s\n' "$name" "$contact" >> .env
+fi
 chown -R heatbot: "$BOT_DIR"
 chmod 600 .env
 
