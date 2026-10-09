@@ -9,7 +9,9 @@ BOT_DIR="$(pwd)"
 
 # На только что созданном сервере apt может быть занят системными обновлениями — ждём
 for _ in $(seq 30); do apt-get update -qq && break; sleep 10; done
-apt-get -o DPkg::Lock::Timeout=600 install -y -qq python3-venv curl >/dev/null
+apt-get -o DPkg::Lock::Timeout=600 install -y -qq python3-venv curl fail2ban >/dev/null
+# fail2ban блокирует адреса, с которых подбирают пароль SSH
+systemctl enable --now fail2ban >/dev/null 2>&1 || true
 
 if ! curl -s -m 15 -o /dev/null https://api.telegram.org; then
     echo "⚠️  С этого сервера нет связи с api.telegram.org — бот здесь работать не сможет."

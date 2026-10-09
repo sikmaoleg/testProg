@@ -10,6 +10,9 @@ WorkingDirectory=@BOT_DIR@
 ExecStart=@BOT_DIR@/venv/bin/python bot.py
 Restart=always
 RestartSec=10
+# Бот почти не нагружает сервер; лимиты — страховка от зацикливания
+CPUQuota=50%
+MemoryMax=300M
 Environment=PYTHONUNBUFFERED=1
 
 [Install]
