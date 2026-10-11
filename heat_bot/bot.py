@@ -288,8 +288,8 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def report_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.clear()
     if not has_consent(update.effective_user.id):
-        # Согласие — отдельным сообщением, до того как бот спросит какие-либо данные
-        await update.message.reply_text(CONSENT_TEXT, reply_markup=CONSENT_KB)
+        # Согласие — до того как бот спросит какие-либо данные; полный текст — по /consent
+        await update.message.reply_text(legal.CONSENT_REQUEST, reply_markup=CONSENT_KB)
         return CONSENT
     await update.message.reply_text("Что случилось?", reply_markup=PROBLEM_KB)
     return PROBLEM
@@ -410,7 +410,8 @@ async def privacy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def consent_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await send_long(update.message, CONSENT_TEXT)
+    consented = has_consent(update.effective_user.id)
+    await send_long(update.message, CONSENT_TEXT, reply_markup=None if consented else CONSENT_KB)
 
 
 async def mydata(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -603,6 +604,9 @@ def main() -> None:
         entry_points=[
             CommandHandler("report", report_start),
             MessageHandler(filters.Regex(f"^{BTN_REPORT}$"), report_start),
+            # Кнопки согласия работают и после /consent, вне начатой заявки
+            MessageHandler(filters.Regex(f"^{BTN_AGREE}$"), consent_given),
+            MessageHandler(filters.Regex(f"^{BTN_DISAGREE}$"), consent_declined),
         ],
         states={
             PROBLEM: [MessageHandler(text, got_problem)],
