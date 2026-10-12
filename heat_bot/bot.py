@@ -207,13 +207,14 @@ def report_row(r) -> list:
             r["phone"], r["comment"], r["full_name"], r["username"], r["user_id"]]
 
 
-# В Google Таблицу (серверы за рубежом) уходят только обезличенные сведения: без квартиры,
-# имени, телефона, Telegram и комментария, где могут быть персональные данные
-SHEET_COLUMNS = ["№", "Дата", "Проблема", "Адрес (улица, дом)", "Как давно"]
+# В Google Таблицу уходят все поля заявки (о хранении там сказано в согласии и политике)
+SHEET_COLUMNS = COLUMNS
 
 
 def sheet_row(r) -> list:
-    return [r["id"], r["created_at"], r["problem"], r["address"], r["duration"]]
+    row = report_row(r)
+    row[9] = f"@{r['username']}" if r["username"] else ""
+    return row
 
 
 def save_report(data: dict) -> int:
@@ -450,7 +451,7 @@ async def revoke_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if ids:
         nums = ", ".join(f"№{i}" for i in ids)
         await send_admins(context.bot, f"🗑 Заявитель отозвал согласие на обработку данных. Заявки {nums} "
-                                       "удалены из базы бота. По закону удалите и их копии: сообщения "
+                                       "удалены из базы бота. По закону удалите и их копии: строки в Google Таблице, сообщения "
                                        "о них в этом чате и выгрузки, если сохраняли.")
 
 
@@ -486,7 +487,8 @@ SHEET_LOCK = asyncio.Lock()
 async def sync_sheet(bot) -> None:
     """Дописывает в Google Таблицу заявки, которые туда ещё не попали.
     Если отправка не удалась, они уйдут со следующей заявкой или при перезапуске бота."""
-    key = f"sheet_last_id:{GOOGLE_SCRIPT_URL}"  # новая ссылка — новая таблица, в неё уйдут все заявки
+    # Новая ссылка (или новый набор столбцов, v2) — в таблицу заново уйдут все заявки из базы
+    key = f"sheet_last_id:v2:{GOOGLE_SCRIPT_URL}"
     async with SHEET_LOCK:
         with db() as conn:
             pending = conn.execute(
