@@ -642,6 +642,8 @@ def main() -> None:
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, start))
 
     log.info("Бот запущен: %s", SLOGAN)
+    # С Python 3.14 цикл событий не создаётся сам, а run_polling его ожидает (Ubuntu 26.04)
+    asyncio.set_event_loop(asyncio.new_event_loop())
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
