@@ -32,12 +32,18 @@ if ! grep -q "^OPERATOR_NAME=." .env && [ -t 0 ]; then
     sed -i '/^OPERATOR_NAME=/d; /^OPERATOR_CONTACT=/d' .env
     printf 'OPERATOR_NAME=%s\nOPERATOR_CONTACT=%s\n' "$name" "$contact" >> .env
 fi
+# Версия кода — бот сообщает администраторам, когда она меняется
+git -C .. log -1 --format="%h %s" > version.txt 2>/dev/null || true
 chown -R heatbot: "$BOT_DIR"
 chmod 600 .env
 
-sed "s#@BOT_DIR@#$BOT_DIR#g" deploy/heat-bot.service > /etc/systemd/system/heat-bot.service
+for unit in heat-bot.service heat-bot-update.service heat-bot-update.timer; do
+    sed "s#@BOT_DIR@#$BOT_DIR#g" "deploy/$unit" > "/etc/systemd/system/$unit"
+done
 systemctl daemon-reload
 systemctl enable -q heat-bot
+# Автообновление из GitHub раз в 10 минут (отключить: systemctl disable --now heat-bot-update.timer)
+systemctl enable -q --now heat-bot-update.timer
 
 if grep -q "your-token" .env; then
     echo

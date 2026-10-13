@@ -1,0 +1,10 @@
+# Раз в 10 минут проверяет GitHub и обновляет бота, если есть изменения.
+[Unit]
+Description=Telegram bot «Нет тепла? Сообщите!» — check for updates every 10 minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=10min
+
+[Install]
+WantedBy=timers.target

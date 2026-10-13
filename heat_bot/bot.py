@@ -566,6 +566,18 @@ async def export(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 # ---------------------------------------------------------------- запуск
 
+async def announce_version(bot) -> None:
+    """После обновления (новая версия кода в version.txt) сообщает администраторам."""
+    try:
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "version.txt"), encoding="utf-8") as f:
+            version = f.read().strip()
+    except OSError:
+        return
+    if version and version != get_meta("version"):
+        set_meta("version", version)
+        await send_admins(bot, f"🔄 Бот обновлён и перезапущен. Версия: {version}")
+
+
 async def post_init(app: Application) -> None:
     """Заполняет профиль бота, если он ещё пустой (правки из @BotFather не перезаписываются),
     и досылает в Google Таблицу заявки, которые туда ещё не попали."""
@@ -578,6 +590,7 @@ async def post_init(app: Application) -> None:
             await app.bot.set_my_commands(COMMANDS)
     except Exception as e:  # noqa: BLE001 — профиль не критичен для работы
         log.warning("Не удалось настроить профиль бота: %s", e)
+    await announce_version(app.bot)
     if not (OPERATOR_NAME and OPERATOR_CONTACT):
         log.warning("Не заданы OPERATOR_NAME / OPERATOR_CONTACT — в согласии нет данных оператора")
     app.bot_data["retention"] = asyncio.create_task(retention_loop())
