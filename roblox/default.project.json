@@ -1,13 +1,18 @@
 {
-	"name": "CoinRushObby",
+	"name": "StarEmpire",
 	"tree": {
 		"$className": "DataModel",
+		"ReplicatedStorage": {
+			"Shared": {
+				"$path": "src/shared"
+			}
+		},
 		"ServerScriptService": {
-			"$path": "src/ServerScriptService"
+			"$path": "src/server"
 		},
 		"StarterPlayer": {
 			"StarterPlayerScripts": {
-				"$path": "src/StarterPlayer/StarterPlayerScripts"
+				"$path": "src/client"
 			}
 		}
 	}
