@@ -8,7 +8,15 @@ local Remotes = require(ReplicatedStorage.Shared.Remotes)
 
 local DataService = {}
 
-local store = DataStoreService:GetDataStore("StarEmpire_Profiles_v1")
+-- In Studio an unpublished place throws here; the game should still run without saving
+local store
+local storeOk, storeError = pcall(function()
+	store = DataStoreService:GetDataStore("StarEmpire_Profiles_v1")
+end)
+if not storeOk then
+	warn("[DataService] DataStore недоступен, прогресс не сохраняется: " .. tostring(storeError))
+end
+
 local profiles = {} -- player -> { data = table, canSave = boolean }
 
 local function defaultProfile()
